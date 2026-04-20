@@ -1,0 +1,67 @@
+import socket
+
+# === CONFIGURACION ===
+ROBOT_IP = "192.168.125.1"
+ROBOT_PORT = 8000
+
+# === CONEXION SOCKET ===
+mi_socket = socket.socket()
+try:
+    mi_socket.connect((ROBOT_IP, ROBOT_PORT))
+    print(f"✔ Conectado exitosamente a RobotStudio en {ROBOT_IP}:{ROBOT_PORT}")
+except Exception as e:
+    print("❌ Error conectando a RobotStudio:", e)
+    exit(1)
+
+print("\n==========================================")
+print("   CONSOLA DE CONTROL DE ROBOT (ABB)")
+print("==========================================")
+print("Comandos:")
+print(" - Traslacion XYZ : EJE,VALOR (ej. X,20 | Z,-10)")
+print(" - Rotar Camara   : R,ANGULO  (solo -90, 0, 90)")
+print(" - Volver a Inicio: HOME")
+print(" - Salir          : SALIR")
+print("==========================================\n")
+
+def enviar_y_recibir(mensaje):
+    try:
+        mi_socket.send(mensaje.encode("utf-8"))
+        # latin-1 y errors='ignore' previenen el cuelgue por bytes invalidos desde el robot
+        respuesta = mi_socket.recv(1024).decode("latin-1", errors="ignore")
+        print(f"🤖 Robot: {respuesta}\n")
+    except Exception as e:
+        print("❌ Error en la comunicacion:", e)
+
+while True:
+    comando = input(">> ").strip().upper()
+    
+    if comando == 'SALIR':
+        break
+    
+    if comando == 'HOME':
+        enviar_y_recibir("HOME")
+        continue
+
+    if ',' in comando:
+        partes = comando.split(',')
+        if len(partes) == 2:
+            eje = partes[0]
+            valor = partes[1]
+            
+            if eje == 'R':
+                if valor in ['-90', '0', '90']:
+                    enviar_y_recibir(comando)
+                else:
+                    print("⚠ Solo se permite: -90, 0 o 90.\n")
+            elif eje in ['X', 'Y', 'Z']:
+                try:
+                    float(valor)
+                    enviar_y_recibir(comando)
+                except ValueError:
+                    print("⚠ El valor debe ser numerico.\n")
+        else:
+            print("⚠ Formato invalido. Usa EJE,VALOR\n")
+    else:
+        print("⚠ Comando no reconocido.\n")
+
+mi_socket.close()
