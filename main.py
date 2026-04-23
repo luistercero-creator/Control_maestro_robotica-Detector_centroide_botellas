@@ -1,8 +1,6 @@
-import tkinter as tk
-from gui import RobotGUI
+from gui import RobotApp
 
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = RobotGUI(root)
-    root.mainloop()
+    app = RobotApp()
+    app.mainloop()

@@ -1,30 +1,26 @@
 import socket
 import threading
-from typing import Callable, Optional, Dict, Any
+from dataclasses import dataclass
+from typing import Callable, Optional
 
-from config import AppConfig
+
+@dataclass
+class RobotState:
+    connected: bool = False
+    busy: bool = False
+    pos_x: float = 0.0
+    pos_y: float = 0.0
+    pos_z: float = 0.0
 
 
 class RobotController:
-    def __init__(
-        self,
-        config: AppConfig,
-        logger,
-        on_state_change: Optional[Callable[[Dict[str, Any]], None]] = None,
-    ):
-        self.config = config
+    def __init__(self, config, logger, on_state_change: Optional[Callable[[RobotState], None]] = None):
+        self.cfg = config
         self.logger = logger
         self.on_state_change = on_state_change
 
-        self.sock = None
-        self.connected = False
-        self.robot_busy = False
-
-        self.pos_x = 0.0
-        self.pos_y = 0.0
-        self.pos_z = 0.0
-
-        self._listener_thread = None
+        self._state = RobotState()
+        self._sock: Optional[socket.socket] = None
         self._lock = threading.Lock()
 
     def _log(self, message: str) -> None:
@@ -36,33 +32,45 @@ class RobotController:
     def _error(self, message: str) -> None:
         self.logger.error(message)
 
-    def _notify_state(self) -> None:
+    def _notify(self) -> None:
         if self.on_state_change:
             self.on_state_change(self.get_state())
 
-    def get_state(self) -> Dict[str, Any]:
-        return {
-            "connected": self.connected,
-            "robot_busy": self.robot_busy,
-            "pos_x": self.pos_x,
-            "pos_y": self.pos_y,
-            "pos_z": self.pos_z,
-        }
+    def get_state(self) -> RobotState:
+        with self._lock:
+            return RobotState(
+                connected=self._state.connected,
+                busy=self._state.busy,
+                pos_x=self._state.pos_x,
+                pos_y=self._state.pos_y,
+                pos_z=self._state.pos_z,
+            )
+
+    def is_connected(self) -> bool:
+        return self.get_state().connected
+
+    def is_busy(self) -> bool:
+        return self.get_state().busy
 
     def connect(self) -> bool:
-        if self.connected:
-            return True
+        with self._lock:
+            if self._state.connected:
+                return True
 
         try:
-            self._log(f"Conectando a {self.config.robot_ip}:{self.config.robot_port}...")
-            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.sock.connect((self.config.robot_ip, self.config.robot_port))
-            self.connected = True
-            self._log("Conexión establecida.")
-            self._notify_state()
+            self._log(f"Conectando a {self.cfg.robot_ip}:{self.cfg.robot_port}...")
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((self.cfg.robot_ip, self.cfg.robot_port))
+            self._sock = sock
 
-            self._listener_thread = threading.Thread(target=self._listen_robot, daemon=True)
-            self._listener_thread.start()
+            with self._lock:
+                self._state.connected = True
+                self._state.busy = False
+
+            self._log("Conexión establecida.")
+            self._notify()
+
+            threading.Thread(target=self._listen_robot, daemon=True).start()
             return True
 
         except Exception as e:
@@ -72,30 +80,33 @@ class RobotController:
 
     def disconnect(self) -> None:
         with self._lock:
-            self.connected = False
-            self.robot_busy = False
+            self._state.connected = False
+            self._state.busy = False
+            sock = self._sock
+            self._sock = None
 
-            if self.sock is not None:
-                try:
-                    self.sock.shutdown(socket.SHUT_RDWR)
-                except Exception:
-                    pass
-                try:
-                    self.sock.close()
-                except Exception:
-                    pass
-                self.sock = None
+        if sock is not None:
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except Exception:
+                pass
+            try:
+                sock.close()
+            except Exception:
+                pass
 
         self._log("Desconectado.")
-        self._notify_state()
+        self._notify()
 
     def send_text(self, text: str) -> bool:
-        if not self.connected or self.sock is None:
-            self._warn("No se puede enviar el comando porque no hay conexión.")
-            return False
+        with self._lock:
+            if not self._state.connected or self._sock is None:
+                self._warn("No hay conexión activa.")
+                return False
+            sock = self._sock
 
         try:
-            self.sock.send(text.encode("utf-8"))
+            sock.send(text.encode("utf-8"))
             self._log(f"Enviado: {text}")
             return True
         except Exception as e:
@@ -104,14 +115,33 @@ class RobotController:
             return False
 
     def send_command(self, command: str) -> bool:
-        self.robot_busy = True
-        self._notify_state()
-        return self.send_text(command)
+        with self._lock:
+            if not self._state.connected:
+                self._warn("No se puede enviar comando sin conexión.")
+                return False
+            self._state.busy = True
+
+        self._notify()
+        ok = self.send_text(command)
+
+        if not ok:
+            with self._lock:
+                self._state.busy = False
+            self._notify()
+
+        return ok
 
     def _listen_robot(self) -> None:
-        while self.connected and self.sock is not None:
+        while True:
+            with self._lock:
+                connected = self._state.connected
+                sock = self._sock
+
+            if not connected or sock is None:
+                break
+
             try:
-                data = self.sock.recv(1024)
+                data = sock.recv(1024)
                 if not data:
                     self._warn("El robot cerró la conexión.")
                     self.disconnect()
@@ -122,35 +152,33 @@ class RobotController:
                     self._process_response(response)
 
             except Exception as e:
-                if self.connected:
-                    self._error(f"Error escuchando al robot: {e}")
+                self._error(f"Error escuchando al robot: {e}")
                 self.disconnect()
                 break
 
     def _process_response(self, response: str) -> None:
-        if "FIN:" in response or "ALERTA:" in response:
-            self.robot_busy = False
+        with self._lock:
+            if "FIN:" in response or "ALERTA:" in response:
+                self._state.busy = False
 
-        if "INC:" in response:
-            partes = response.split()
-            try:
-                valor = float(partes[1])
-                eje = partes[3]
+            if "INC:" in response:
+                parts = response.split()
+                try:
+                    value = float(parts[1])
+                    axis = parts[3]
+                    if axis == "X":
+                        self._state.pos_x += value
+                    elif axis == "Y":
+                        self._state.pos_y += value
+                    elif axis == "Z":
+                        self._state.pos_z += value
+                except Exception:
+                    pass
 
-                if eje == "X":
-                    self.pos_x += valor
-                elif eje == "Y":
-                    self.pos_y += valor
-                elif eje == "Z":
-                    self.pos_z += valor
-
-            except Exception:
-                pass
-
-        elif "HOME" in response:
-            self.pos_x = 0.0
-            self.pos_y = 0.0
-            self.pos_z = 0.0
+            elif "HOME" in response:
+                self._state.pos_x = 0.0
+                self._state.pos_y = 0.0
+                self._state.pos_z = 0.0
 
         self._log(f"Robot: {response}")
-        self._notify_state()
+        self._notify()
