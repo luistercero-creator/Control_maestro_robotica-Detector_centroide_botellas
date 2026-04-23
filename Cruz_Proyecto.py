@@ -9,7 +9,7 @@ import time
 from keras.models import load_model
 
 # === CONFIGURACIONES DE RED Y RUTAS ===
-ROBOT_IP = "172.18.19.87" 
+ROBOT_IP = "192.168.125.1" 
 ROBOT_PORT = 8000
 RUTA_PROYECTO = r"C:\Users\VICTUS\Documents\A_Fotos_Botella" 
 
@@ -222,9 +222,11 @@ class RobotGUI:
             self.btn_ajus_manual.config(state=tk.NORMAL)
             
         elif self.estado_secuencia == "LOWERING_FINAL_40":
-            self.estado_secuencia = "MOVING_POS_BOTELLA"
-            self.log("Llevando hacia el punto final POS_BOTELLA...")
-            self.enviar_texto("POS_BOTELLA")
+            # NUEVA PAUSA: Espera confirmación antes de ir a Pos_Botella
+            self.estado_secuencia = "WAITING_USER_3"
+            self.log("⏸ Pausa: Inserción completada. Confirme para mover a POS_BOTELLA.")
+            self.btn_continuar.config(state=tk.NORMAL)
+            self.btn_ajus_manual.config(state=tk.NORMAL)
             
         elif self.estado_secuencia == "MOVING_POS_BOTELLA":
             self.estado_secuencia = "IDLE"
@@ -248,6 +250,12 @@ class RobotGUI:
             self.estado_secuencia = "LOWERING_FINAL_40"
             self.log(f"Continuando: Inserción final ({PASO_Z_INSERCION}mm)...")
             self.enviar_texto(f"Z,{PASO_Z_INSERCION}")
+            
+        elif self.estado_secuencia == "WAITING_USER_3":
+            # NUEVO MOVIMIENTO: Viaje a Pos_Botella tras confirmar inserción
+            self.estado_secuencia = "MOVING_POS_BOTELLA"
+            self.log("Llevando hacia el punto final POS_BOTELLA...")
+            self.enviar_texto("POS_BOTELLA")
 
     def activar_ajuste_manual(self):
         self.log("⚙ Ajuste Manual activado. Mueva el robot con comandos y presione 'Continuar'.")
