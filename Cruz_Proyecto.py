@@ -10,7 +10,7 @@ from keras.models import load_model
 # === CONFIGURACIONES DE RED Y RUTAS ===
 ROBOT_IP = "192.168.1.21"
 ROBOT_PORT = 8000
-RUTA_PROYECTO = r"C:\Users\VICTUS\Documents\A_Fotos_Botella" 
+RUTA_PROYECTO = "converted_keras"
 
 # === PARÁMETROS DE VISIÓN ARTIFICIAL ===
 UMBRAL_CONFIANZA = 0.90 
@@ -223,7 +223,7 @@ class RobotGUI:
             self.log(f"❌ Error al cargar IA: {e}")
             return
 
-        cap = cv2.VideoCapture(0, cv2.CAP_DSHOW)
+        cap = cv2.VideoCapture(1, cv2.CAP_DSHOW)
         if not cap.isOpened():
             self.log("❌ Error de cámara.")
             return
