@@ -57,7 +57,7 @@ class VisionProcessor:
         self._smooth_y = 0
         self._smooth_r = 0
 
-    def process_frame(self, frame):
+    def process_frame(self, frame, centroid_enabled: bool = True):
         if self._model is None:
             return frame, VisionAnalysis(status_text="MODELO NO CARGADO")
 
@@ -79,10 +79,18 @@ class VisionProcessor:
         confidence = float(pred[0][idx])
         class_name = self._class_names[idx].strip() if self._class_names else ""
 
-        analysis = VisionAnalysis(confidence=confidence, status_text="BUSCANDO BOTELLA...")
+        analysis = VisionAnalysis(confidence=confidence)
+
+        if not centroid_enabled:
+            analysis.status_text = "CENTROIDE DESACTIVADO"
+            self._reset_smoothing()
+            cv2.putText(img, analysis.status_text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (180, 180, 180), 2)
+            cv2.putText(img, f"Confianza IA: {confidence * 100:.0f}%", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+            return img, analysis
 
         if "0" not in class_name or confidence <= self.cfg.confidence_threshold:
             self._reset_smoothing()
+            analysis.status_text = "BUSCANDO BOTELLA..."
             cv2.putText(img, analysis.status_text, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             cv2.putText(img, f"Confianza IA: {confidence * 100:.0f}%", (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
             return img, analysis

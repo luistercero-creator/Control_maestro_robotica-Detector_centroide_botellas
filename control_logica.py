@@ -12,9 +12,39 @@ class ControlDecision:
 class ControlLogic:
     def __init__(self, config):
         self.cfg = config
+        self.auto_mode = False
+        self.manual_centroid_mode = False
 
-    def decide(self, analysis, robot_busy: bool) -> ControlDecision | None:
+    def reset(self) -> None:
+        self.auto_mode = False
+        self.manual_centroid_mode = False
+
+    def is_centroid_enabled(self) -> bool:
+        return self.auto_mode or self.manual_centroid_mode
+
+    def toggle_auto_mode(self) -> bool:
+        self.auto_mode = not self.auto_mode
+        if self.auto_mode:
+            self.manual_centroid_mode = True
+        return self.auto_mode
+
+    def set_auto_mode(self, enabled: bool) -> None:
+        self.auto_mode = bool(enabled)
+        if self.auto_mode:
+            self.manual_centroid_mode = True
+
+    def toggle_centroid_mode(self) -> bool:
+        self.manual_centroid_mode = not self.manual_centroid_mode
+        return self.manual_centroid_mode
+
+    def set_centroid_mode(self, enabled: bool) -> None:
+        self.manual_centroid_mode = bool(enabled)
+
+    def decide(self, analysis, robot_busy: bool):
         if robot_busy:
+            return None
+
+        if not self.is_centroid_enabled():
             return None
 
         if not analysis.detected:

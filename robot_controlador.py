@@ -14,10 +14,17 @@ class RobotState:
 
 
 class RobotController:
-    def __init__(self, config, logger, on_state_change: Optional[Callable[[RobotState], None]] = None):
+    def __init__(
+        self,
+        config,
+        logger,
+        on_state_change: Optional[Callable[[RobotState], None]] = None,
+        on_response: Optional[Callable[[str], None]] = None,
+    ):
         self.cfg = config
         self.logger = logger
         self.on_state_change = on_state_change
+        self.on_response = on_response
 
         self._state = RobotState()
         self._sock: Optional[socket.socket] = None
@@ -60,7 +67,9 @@ class RobotController:
         try:
             self._log(f"Conectando a {self.cfg.robot_ip}:{self.cfg.robot_port}...")
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(5)
             sock.connect((self.cfg.robot_ip, self.cfg.robot_port))
+            sock.settimeout(None)
             self._sock = sock
 
             with self._lock:
@@ -106,7 +115,7 @@ class RobotController:
             sock = self._sock
 
         try:
-            sock.send(text.encode("utf-8"))
+            sock.sendall(text.encode("utf-8"))
             self._log(f"Enviado: {text}")
             return True
         except Exception as e:
@@ -179,6 +188,14 @@ class RobotController:
                 self._state.pos_x = 0.0
                 self._state.pos_y = 0.0
                 self._state.pos_z = 0.0
+
+            elif "INICIO" in response:
+                self._state.pos_x = 0.0
+                self._state.pos_y = 0.0
+                self._state.pos_z = -20.0
+
+        if self.on_response:
+            self.on_response(response)
 
         self._log(f"Robot: {response}")
         self._notify()

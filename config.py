@@ -4,7 +4,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class AppConfig:
     # Red
-    robot_ip: str = "192.168.1.21"
+    robot_ip: str = "172.18.19.97"
     robot_port: int = 8000
 
     # IA
