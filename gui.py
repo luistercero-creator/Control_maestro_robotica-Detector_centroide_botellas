@@ -3,7 +3,7 @@ import cv2
 from PIL import Image
 import os
 
-# Importaciones de tus módulos locales
+# Importaciones de tus módulos de lógica
 from vision_servicio import CameraService
 from config import CONFIG
 from control_logica import ControlLogic
@@ -15,151 +15,157 @@ class RobotApp(ctk.CTk):
     def __init__(self):
         super().__init__()
 
-        # --- CONFIGURACIÓN DE VENTANA ---
+        # --- 1. CONFIGURACIÓN DE VENTANA ---
         ctk.set_appearance_mode("dark")
         ctk.set_default_color_theme("blue")
         self.title("Consola ABB + Visión IA - ULSA 2026")
         self.geometry("1250x850")
         
-        # Esto hace que la app inicie maximizada correctamente
+        # Maximizar automáticamente en Windows
         self.after(100, lambda: self.state('zoomed'))
 
-        # --- ESTADO INICIAL ---
+        # --- 2. ESTADO INICIAL ---
         self.auto_mode = False
         self.running = True
         self.current_image = None
 
-        # --- INICIALIZACIÓN DE SERVICIOS ---
+        # --- 3. INICIALIZACIÓN DE COMPONENTES ---
         self.logger = AppLogger(self._append_log_safe)
         self.robot = RobotController(CONFIG, self.logger, on_state_change=self._on_robot_state_change)
         self.vision = VisionProcessor(CONFIG, self.logger)
         self.control = ControlLogic(CONFIG)
         
-        # Servicio de cámara (Mantiene el flujo de video)
+        # Servicio de cámara
         self.camera = CameraService(
-            CONFIG,
-            self.vision,
-            self.control,
-            self.robot,
-            self.logger,
+            CONFIG, self.vision, self.control, self.robot, self.logger,
             on_frame=self._on_frame_ready,
         )
 
-        # --- CONSTRUCCIÓN DE INTERFAZ ---
+        # --- 4. CONSTRUCCIÓN DE INTERFAZ ---
         self._build_ui()
-        
-        # Manejo de cierre de ventana
         self.protocol("WM_DELETE_WINDOW", self.on_close)
 
-        # --- CARGA DE MODELO Y ARRANQUE ---
+        # --- 5. ARRANQUE ---
         if not self.vision.load_model():
-            self._append_log("❌ ERROR: No se pudo cargar el modelo IA. Revisa las versiones de Keras/Python.")
+            self._append_log("❌ ERROR: No se pudo cargar el modelo IA.")
 
         self._update_robot_state(self.robot.get_state())
         self.camera.start()
 
     def _build_ui(self):
-        # Configuración de pesos de la cuadrícula principal
-        self.grid_columnconfigure(0, weight=0) # Panel fijo
-        self.grid_columnconfigure(1, weight=1) # Video expandible
+        # Colores de la paleta Estilo Neumorfismo
+        BG_COLOR = "#1e1e1e"        
+        CARD_COLOR = "#2b2b2b"      
+        ACCENT_BLUE = "#3498db"     
+        ACCENT_PURPLE = "#9b59b6"   
+        TEXT_DIM = "#a0a0a0"
+
+        self.grid_columnconfigure(0, weight=0)
+        self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
 
-        # --- PANEL IZQUIERDO (CON SCROLL PARA EVITAR QUE SE CORTEN BOTONES) ---
-        self.left_panel = ctk.CTkScrollableFrame(self, corner_radius=18, width=330)
-        self.left_panel.grid(row=0, column=0, sticky="nsw", padx=16, pady=16)
+        # ==========================================
+        # PANEL IZQUIERDO (CON SCROLL Y TARJETAS)
+        # ==========================================
+        self.left_panel = ctk.CTkScrollableFrame(self, corner_radius=20, width=350, fg_color=BG_COLOR)
+        self.left_panel.grid(row=0, column=0, sticky="nsw", padx=15, pady=15)
 
         # Títulos
-        ctk.CTkLabel(self.left_panel, text="Consola ABB", font=ctk.CTkFont(size=24, weight="bold")).pack(anchor="w", padx=16, pady=(16, 4))
-        ctk.CTkLabel(self.left_panel, text="Control y Seguimiento IA", text_color="#A0A0A0").pack(anchor="w", padx=16, pady=(0, 12))
+        header = ctk.CTkFrame(self.left_panel, fg_color="transparent")
+        header.pack(fill="x", padx=10, pady=(15, 20))
+        ctk.CTkLabel(header, text="Consola ABB", font=ctk.CTkFont(size=26, weight="bold")).pack(anchor="w")
+        ctk.CTkLabel(header, text="Control, visión y seguimiento", text_color=TEXT_DIM).pack(anchor="w")
 
-        # Tarjeta de Estado de Conexión
-        self.status_card = ctk.CTkFrame(self.left_panel, corner_radius=14)
-        self.status_card.pack(fill="x", padx=16, pady=(0, 12))
-        self.lbl_connection = ctk.CTkLabel(self.status_card, text="Desconectado", font=ctk.CTkFont(weight="bold"))
-        self.lbl_connection.pack(anchor="w", padx=14, pady=(12, 4))
-        self.lbl_busy = ctk.CTkLabel(self.status_card, text="Robot libre", text_color="#A0A0A0")
-        self.lbl_busy.pack(anchor="w", padx=14, pady=(0, 12))
+        # Tarjeta: Conexión
+        conn_card = ctk.CTkFrame(self.left_panel, corner_radius=15, fg_color=CARD_COLOR)
+        conn_card.pack(fill="x", padx=10, pady=8)
+        self.lbl_connection = ctk.CTkLabel(conn_card, text="● Desconectado", text_color="#ef9a9a", font=ctk.CTkFont(weight="bold"))
+        self.lbl_connection.pack(pady=(15, 2), padx=15, anchor="w")
+        self.lbl_busy = ctk.CTkLabel(conn_card, text="Robot libre", text_color=TEXT_DIM)
+        self.lbl_busy.pack(pady=(0, 15), padx=15, anchor="w")
 
-        # Coordenadas
-        coords_card = ctk.CTkFrame(self.left_panel, corner_radius=14)
-        coords_card.pack(fill="x", padx=16, pady=(0, 12))
-        ctk.CTkLabel(coords_card, text="Coordenadas (mm)", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=14, pady=(12, 8))
-        self.lbl_x = ctk.CTkLabel(coords_card, text="X: 0.00", font=ctk.CTkFont(size=18, weight="bold")); self.lbl_x.pack(anchor="w", padx=14, pady=2)
-        self.lbl_y = ctk.CTkLabel(coords_card, text="Y: 0.00", font=ctk.CTkFont(size=18, weight="bold")); self.lbl_y.pack(anchor="w", padx=14, pady=2)
-        self.lbl_z = ctk.CTkLabel(coords_card, text="Z: 0.00", font=ctk.CTkFont(size=18, weight="bold")); self.lbl_z.pack(anchor="w", padx=14, pady=(2, 12))
+        # Tarjeta: Coordenadas
+        coords_card = ctk.CTkFrame(self.left_panel, corner_radius=15, fg_color=CARD_COLOR)
+        coords_card.pack(fill="x", padx=10, pady=8)
+        ctk.CTkLabel(coords_card, text="Coordenadas actuales (mm)", font=ctk.CTkFont(weight="bold")).pack(pady=(15, 8), padx=15, anchor="w")
+        self.lbl_x = ctk.CTkLabel(coords_card, text="X: 0.00", font=ctk.CTkFont(family="Consolas", size=18))
+        self.lbl_x.pack(padx=20, anchor="w")
+        self.lbl_y = ctk.CTkLabel(coords_card, text="Y: 0.00", font=ctk.CTkFont(family="Consolas", size=18))
+        self.lbl_y.pack(padx=20, anchor="w")
+        self.lbl_z = ctk.CTkLabel(coords_card, text="Z: 0.00", font=ctk.CTkFont(family="Consolas", size=18))
+        self.lbl_z.pack(padx=20, pady=(0, 15), anchor="w")
 
-        # Botones Conexión
-        conn_card = ctk.CTkFrame(self.left_panel, corner_radius=14)
-        conn_card.pack(fill="x", padx=16, pady=(0, 12))
-        self.btn_connect = ctk.CTkButton(conn_card, text="Conectar", command=self.connect_robot); self.btn_connect.pack(fill="x", padx=14, pady=(12, 8))
-        self.btn_disconnect = ctk.CTkButton(conn_card, text="Desconectar", command=self.disconnect_robot, fg_color="#C62828", hover_color="#A61E1E")
-        self.btn_disconnect.pack(fill="x", padx=14, pady=(0, 12))
+        # Tarjeta: Botones Conexión
+        btn_conn_card = ctk.CTkFrame(self.left_panel, corner_radius=15, fg_color=CARD_COLOR)
+        btn_conn_card.pack(fill="x", padx=10, pady=8)
+        self.btn_connect = ctk.CTkButton(btn_conn_card, text="Conectar", fg_color=ACCENT_BLUE, height=35, command=self.connect_robot)
+        self.btn_connect.pack(fill="x", padx=15, pady=(15, 8))
+        self.btn_disconnect = ctk.CTkButton(btn_conn_card, text="Desconectar", fg_color="#e74c3c", height=35, command=self.disconnect_robot)
+        self.btn_disconnect.pack(fill="x", padx=15, pady=(0, 15))
 
-        # Comandos Manuales
-        cmd_card = ctk.CTkFrame(self.left_panel, corner_radius=14)
-        cmd_card.pack(fill="x", padx=16, pady=(0, 12))
-        self.entry_cmd = ctk.CTkEntry(cmd_card, placeholder_text="Ej: X,50 o HOME"); self.entry_cmd.pack(fill="x", padx=14, pady=(12, 8))
-        self.btn_send = ctk.CTkButton(cmd_card, text="Enviar", command=self.send_manual_command); self.btn_send.pack(fill="x", padx=14, pady=(0, 12))
+        # Tarjeta: Manual
+        manual_card = ctk.CTkFrame(self.left_panel, corner_radius=15, fg_color=CARD_COLOR)
+        manual_card.pack(fill="x", padx=10, pady=8)
+        self.entry_cmd = ctk.CTkEntry(manual_card, placeholder_text="Escribe el comando", fg_color="#333333")
+        self.entry_cmd.pack(fill="x", padx=15, pady=(15, 8))
+        self.btn_send = ctk.CTkButton(manual_card, text="Enviar comando", fg_color=ACCENT_BLUE, command=self.send_manual_command)
+        self.btn_send.pack(fill="x", padx=15, pady=(0, 15))
 
-        # CONTROL IA (Asegurado que no se corte)
-        ia_card = ctk.CTkFrame(self.left_panel, corner_radius=14)
-        ia_card.pack(fill="x", padx=16, pady=(0, 12))
-        ctk.CTkLabel(ia_card, text="Control Inteligente", font=ctk.CTkFont(weight="bold")).pack(anchor="w", padx=14, pady=(12, 8))
-        self.btn_auto = ctk.CTkButton(ia_card, text="Iniciar autoalineación", command=self.toggle_auto_alignment, fg_color="#7B1FA2", hover_color="#6A1B9A")
-        self.btn_auto.pack(fill="x", padx=14, pady=(0, 8))
-        self.btn_stop = ctk.CTkButton(ia_card, text="PARO DE EMERGENCIA", command=self.emergency_stop, fg_color="#B71C1C", hover_color="#8E1515")
-        self.btn_stop.pack(fill="x", padx=14, pady=(0, 12))
+        # Tarjeta: IA
+        ia_card = ctk.CTkFrame(self.left_panel, corner_radius=15, fg_color=CARD_COLOR)
+        ia_card.pack(fill="x", padx=10, pady=8)
+        self.btn_auto = ctk.CTkButton(ia_card, text="Iniciar autoalineación", fg_color=ACCENT_PURPLE, height=45, font=ctk.CTkFont(weight="bold"), command=self.toggle_auto_alignment)
+        self.btn_auto.pack(fill="x", padx=15, pady=15)
+        self.btn_stop = ctk.CTkButton(ia_card, text="PARO DE EMERGENCIA", fg_color="#B71C1C", height=45, command=self.emergency_stop)
+        self.btn_stop.pack(fill="x", padx=15, pady=(0, 15))
 
-        # Estado Visión
-        vision_info = ctk.CTkFrame(self.left_panel, corner_radius=14)
-        vision_info.pack(fill="x", padx=16, pady=(0, 12))
-        self.lbl_vision_status = ctk.CTkLabel(vision_info, text="Esperando cámara..."); self.lbl_vision_status.pack(anchor="w", padx=14, pady=2)
-        self.lbl_confidence = ctk.CTkLabel(vision_info, text="Confianza IA: 0%"); self.lbl_confidence.pack(anchor="w", padx=14, pady=(0, 12))
+        # Tarjeta: Info Visión
+        vis_card = ctk.CTkFrame(self.left_panel, corner_radius=15, fg_color=CARD_COLOR)
+        vis_card.pack(fill="x", padx=10, pady=8)
+        self.lbl_vision_status = ctk.CTkLabel(vis_card, text="Esperando cámara...")
+        self.lbl_vision_status.pack(pady=(10, 2), padx=15, anchor="w")
+        self.lbl_confidence = ctk.CTkLabel(vis_card, text="Confianza IA: 0%")
+        self.lbl_confidence.pack(pady=(0, 10), padx=15, anchor="w")
 
-        # --- PANEL DERECHO (CONTENEDOR DE VIDEO) ---
-        self.right_panel = ctk.CTkFrame(self, corner_radius=18)
-        self.right_panel.grid(row=0, column=1, sticky="nsew", padx=(0, 16), pady=16)
-        self.right_panel.grid_rowconfigure(1, weight=1) # El video ocupa todo el centro
+        # ==========================================
+        # PANEL DERECHO (VIDEO PRIORIZADO Y CONSOLA)
+        # ==========================================
+        self.right_panel = ctk.CTkFrame(self, corner_radius=20, fg_color=BG_COLOR)
+        self.right_panel.grid(row=0, column=1, sticky="nsew", padx=(0, 15), pady=15)
+        
+        # Le decimos a la cuadrícula que TODA la expansión vertical sea para la fila 1 (el video)
+        self.right_panel.grid_rowconfigure(1, weight=1)
         self.right_panel.grid_columnconfigure(0, weight=1)
 
-        self.video_title = ctk.CTkLabel(self.right_panel, text="Cámara en Vivo - Detector de Centroides", font=ctk.CTkFont(size=22, weight="bold"))
-        self.video_title.grid(row=0, column=0, sticky="w", padx=16, pady=(16, 8))
+        ctk.CTkLabel(self.right_panel, text="Cámara en vivo", font=ctk.CTkFont(size=22, weight="bold")).grid(row=0, column=0, sticky="w", padx=20, pady=(15, 5))
 
-        # El video_label ahora tiene sticky="nsew" para llenar todo el espacio
-        self.video_label = ctk.CTkLabel(self.right_panel, text="Iniciando Stream...", anchor="center", fg_color="#1a1a1a", corner_radius=12)
-        self.video_label.grid(row=1, column=0, sticky="nsew", padx=16, pady=(0, 12))
+        # Etiqueta de video con expansión total asegurada
+        self.video_label = ctk.CTkLabel(self.right_panel, text="Cargando stream...", fg_color="#000000", corner_radius=15)
+        self.video_label.grid(row=1, column=0, sticky="nsew", padx=20, pady=5)
 
-        self.log_box = ctk.CTkTextbox(self.right_panel, height=150, corner_radius=14)
-        self.log_box.grid(row=3, column=0, sticky="ew", padx=16, pady=(0, 16))
+        # Consola reducida a tamaño fijo (sin el ipady que robaba espacio)
+        ctk.CTkLabel(self.right_panel, text="Consola", font=ctk.CTkFont(size=16, weight="bold")).grid(row=2, column=0, sticky="w", padx=20, pady=(5, 0))
+        self.log_box = ctk.CTkTextbox(self.right_panel, height=120, corner_radius=15, fg_color=CARD_COLOR, border_width=1, border_color="#3d3d3d")
+        self.log_box.grid(row=3, column=0, sticky="ew", padx=20, pady=(5, 15))
         self.log_box.configure(state="disabled")
 
-        self._set_connected_ui(False)
-
     def _render_frame(self, frame, analysis) -> None:
-        """Renderiza el frame ajustando el tamaño al espacio disponible en pantalla."""
-        # 1. Convertir BGR a RGB para PIL
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         img_raw = Image.fromarray(rgb)
         
-        # 2. Obtener dimensiones dinámicas del widget (Pantalla completa ready)
+        # Tamaño dinámico ajustado al espacio disponible real
         w = self.video_label.winfo_width()
         h = self.video_label.winfo_height()
-        
-        # Valores por defecto si la ventana no ha cargado totalmente
-        if w < 100 or h < 100: w, h = 820, 615
+        if w < 100: w, h = 820, 615
 
-        # 3. Redimensionar imagen con alta calidad (Sin cortes)
         img_resized = img_raw.resize((w, h), Image.Resampling.LANCZOS)
-
-        # 4. Actualizar el widget de video
         self.current_image = ctk.CTkImage(light_image=img_resized, dark_image=img_resized, size=(w, h))
         self.video_label.configure(image=self.current_image, text="")
 
-        # 5. Actualizar labels de visión
         self.lbl_vision_status.configure(text=analysis.status_text)
         self.lbl_confidence.configure(text=f"Confianza IA: {analysis.confidence * 100:.0f}%")
 
-    # --- MÉTODOS DE SOPORTE (LOGS Y ROBOT) ---
+    # --- LÓGICA DE APOYO ---
     def _append_log(self, message: str) -> None:
         self.log_box.configure(state="normal")
         self.log_box.insert("end", f"> {message}\n")
@@ -169,61 +175,39 @@ class RobotApp(ctk.CTk):
     def _append_log_safe(self, message: str) -> None:
         self.after(0, self._append_log, message)
 
-    def _set_connected_ui(self, connected: bool) -> None:
-        st = "normal" if connected else "disabled"
-        self.btn_disconnect.configure(state=st); self.btn_send.configure(state=st)
-        self.btn_auto.configure(state=st); self.btn_stop.configure(state=st)
-        if connected:
-            self.lbl_connection.configure(text=f"✅ CONECTADO: {CONFIG.robot_ip}", text_color="#81C784")
-        else:
-            self.lbl_connection.configure(text="❌ DESCONECTADO", text_color="#FF8A80")
+    def _on_robot_state_change(self, state) -> None:
+        self.after(0, self._update_robot_state, state)
 
     def _update_robot_state(self, state) -> None:
         self.lbl_x.configure(text=f"X: {state.pos_x:.2f}")
         self.lbl_y.configure(text=f"Y: {state.pos_y:.2f}")
         self.lbl_z.configure(text=f"Z: {state.pos_z:.2f}")
-        self.lbl_busy.configure(text="Robot ocupado" if state.busy else "Robot libre", 
-                                 text_color="#FFD54F" if state.busy else "#A0A0A0")
-        self._set_connected_ui(state.connected)
-
-    def _on_robot_state_change(self, state) -> None:
-        self.after(0, self._update_robot_state, state)
+        self.lbl_connection.configure(
+            text="● Conectado" if state.connected else "● Desconectado",
+            text_color="#81C784" if state.connected else "#ef9a9a"
+        )
+        self.lbl_busy.configure(text="Robot ocupado" if state.busy else "Robot libre")
 
     def _on_frame_ready(self, frame, analysis) -> None:
         self.after(0, self._render_frame, frame, analysis)
 
-    # --- ACCIONES DE BOTONES ---
-    def connect_robot(self):
-        if self.robot.connect(): self._append_log("Conectando con ABB IRB 140...")
-        else: self._append_log("Fallo de conexión. Revisa IP/Puerto.")
-
-    def disconnect_robot(self):
-        self.auto_mode = False
-        self._update_auto_button()
-        self.robot.disconnect()
-
+    def connect_robot(self): self.robot.connect()
+    def disconnect_robot(self): self.robot.disconnect()
     def send_manual_command(self):
         cmd = self.entry_cmd.get().strip().upper()
-        if cmd and self.robot.send_command(cmd):
-            self._append_log(f"Comando enviado: {cmd}")
-            self.entry_cmd.delete(0, "end")
+        if cmd and self.robot.send_command(cmd): self.entry_cmd.delete(0, "end")
 
     def toggle_auto_alignment(self):
         self.auto_mode = not self.auto_mode
-        self._update_auto_button()
-        self._append_log("MODO AUTO: ACTIVADO" if self.auto_mode else "MODO AUTO: DETENIDO")
-
-    def _update_auto_button(self):
-        if self.auto_mode:
-            self.btn_auto.configure(text="Detener autoalineación", fg_color="#D84315", hover_color="#BF360C")
-        else:
-            self.btn_auto.configure(text="Iniciar autoalineación", fg_color="#7B1FA2", hover_color="#6A1B9A")
+        self.btn_auto.configure(
+            text="Detener autoalineación" if self.auto_mode else "Iniciar autoalineación",
+            fg_color="#D84315" if self.auto_mode else "#9b59b6"
+        )
 
     def emergency_stop(self):
         self.auto_mode = False
-        self._update_auto_button()
-        self.robot.emergency_stop() # Asumiendo que implementaste este método en el controlador
-        self._append_log("⚠️ PARO DE EMERGENCIA EJECUTADO")
+        self.robot.disconnect()
+        self._append_log("⚠️ PARO DE EMERGENCIA")
 
     def on_close(self):
         self.camera.stop()
