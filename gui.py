@@ -179,6 +179,40 @@ class RobotApp(ctk.CTk):
         )
         self.btn_stop.pack(fill="x", padx=15, pady=(0, 15))
 
+        quick_card = ctk.CTkFrame(self.left_panel, corner_radius=15, fg_color=CARD_COLOR)
+        quick_card.pack(fill="x", padx=10, pady=8)
+
+        ctk.CTkLabel(
+            quick_card,
+            text="Acciones rápidas",
+            font=ctk.CTkFont(weight="bold"),
+        ).pack(anchor="w", padx=15, pady=(15, 10))
+
+        self.btn_home = ctk.CTkButton(
+            quick_card,
+            text="HOME",
+            fg_color="#FF9800",
+            command=lambda: self.send_quick_command("HOME"),
+        )
+        self.btn_home.pack(fill="x", padx=15, pady=(0, 8))
+
+        self.btn_inicio = ctk.CTkButton(
+            quick_card,
+            text="INICIO",
+            fg_color="#00BCD4",
+            text_color="black",
+            command=lambda: self.send_quick_command("INICIO"),
+        )
+        self.btn_inicio.pack(fill="x", padx=15, pady=(0, 8))
+
+        self.btn_pos_botella = ctk.CTkButton(
+            quick_card,
+            text="POS_BOTELLA",
+            fg_color="#E91E63",
+            command=lambda: self.send_quick_command("POS_BOTELLA"),
+        )
+        self.btn_pos_botella.pack(fill="x", padx=15, pady=(0, 15))
+
         vis_card = ctk.CTkFrame(self.left_panel, corner_radius=15, fg_color=CARD_COLOR)
         vis_card.pack(fill="x", padx=10, pady=8)
         self.lbl_vision_status = ctk.CTkLabel(vis_card, text="Esperando cámara...")
@@ -200,8 +234,6 @@ class RobotApp(ctk.CTk):
 
         self.video_stage = ctk.CTkFrame(self.right_panel, corner_radius=15, fg_color="#000000")
         self.video_stage.grid(row=1, column=0, sticky="nsew", padx=20, pady=5)
-        self.video_stage.grid_rowconfigure(0, weight=1)
-        self.video_stage.grid_columnconfigure(0, weight=1)
 
         self.video_label = ctk.CTkLabel(
             self.video_stage,
@@ -256,7 +288,11 @@ class RobotApp(ctk.CTk):
             self.lbl_vision_status.configure(text=analysis.status_text)
             self.lbl_confidence.configure(text=f"Confianza IA: {analysis.confidence * 100:.0f}%")
 
-            self._update_overlay_texts(analysis, frame.shape[1], frame.shape[0])
+            self._update_overlay_texts(
+                analysis,
+                frame.shape[1],
+                frame.shape[0],
+            )
 
         except Exception as e:
             self.logger.error(f"Error renderizando video: {e}")
@@ -278,17 +314,6 @@ class RobotApp(ctk.CTk):
             error_x = analysis.error_robot_x
             error_y = analysis.error_robot_y
             aligned = analysis.aligned
-
-        if analysis is None:
-            self.lbl_hud_status_text = "Estado: ESPERANDO"
-        else:
-            if aligned:
-                self.lbl_hud_status_text = "Estado: ALINEADO PERFECTAMENTE"
-            else:
-                self.lbl_hud_status_text = f"Estado: {status_text}"
-
-        if hasattr(self, "hud_left"):
-            pass
 
         mode_text = mode_override if mode_override is not None else (
             "ON" if self.control.auto_mode else ("MANUAL" if self.control.manual_centroid_mode else "OFF")
@@ -375,6 +400,9 @@ class RobotApp(ctk.CTk):
         self.btn_auto.configure(state=state)
         self.btn_stop.configure(state=state)
         self.switch_centroid.configure(state=state)
+        self.btn_home.configure(state=state)
+        self.btn_inicio.configure(state=state)
+        self.btn_pos_botella.configure(state=state)
 
     def connect_robot(self):
         if self.robot.connect():
@@ -398,6 +426,10 @@ class RobotApp(ctk.CTk):
         if self.robot.send_command(cmd):
             self._append_log(f"Comando manual enviado: {cmd}")
             self.entry_cmd.delete(0, "end")
+
+    def send_quick_command(self, command: str):
+        if self.robot.send_command(command):
+            self._append_log(f"Comando rápido enviado: {command}")
 
     def toggle_auto_alignment(self):
         self.control.toggle_auto_mode()
