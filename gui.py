@@ -3,7 +3,6 @@ import time
 import customtkinter as ctk
 import cv2
 from PIL import Image, ImageOps
-from tkinter import messagebox
 
 from config import CONFIG
 from control_logica import ControlLogic
@@ -408,7 +407,6 @@ class RobotApp(ctk.CTk):
         if self.robot.connect():
             self._append_log("Conectado al robot.")
         else:
-            messagebox.showerror("Error", "No se pudo conectar con el robot.")
             self._append_log("No se pudo conectar con el robot.")
 
     def disconnect_robot(self):
