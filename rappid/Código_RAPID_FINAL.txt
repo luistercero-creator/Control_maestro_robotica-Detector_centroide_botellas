@@ -1,0 +1,246 @@
+MODULE Modulo_Principal
+    ! Misma coordenada (15, 500, 712), pero orientación y configuración copiadas de HOME
+    CONST robtarget Botella_1:=[[649.999973102,0,386.999975193],[0.707106774,0,0.707106788,0],[0,2,2,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget HOME:=[[515,0,712],[0.707106781,0,0.707106781,0],[0,0,0,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget INICIO:=[[300,0,500],[0.707106781,0,0.707106781,0],[0,0,0,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget Target_10:=[[17.240038929,499.961376517,712.051649028],[0.508744589,-0.491113668,0.508340508,0.491504055],[0,0,-1,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget Pos_Botella:=[[15,500,712],[0.707106781,0,0.707106781,0],[0,0,0,1],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST robtarget Pos_Botella_2:=[[15,500,452],[0.707106781,0,0.707106781,0],[0,0,3,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    CONST jointtarget jHomeSeguro := [[0,0,0,0,0,0],[9E+09,9E+09,9E+09,9E+09,9E+09,9E+09]];
+    
+    CONST speeddata vRotacionNormal := [20, 20, 5000, 1000];
+    ! Cambiado a VAR para que Python pueda ajustar la velocidad (V,5 y V,20)
+    VAR speeddata vTraslacionLenta := [20, 500, 5000, 1000]; 
+    
+    TASK PERS wobjdata Botella:=[FALSE,TRUE,"",[[0,0,0],[1,0,0,0]],[[0,0,0],[1,0,0,0]]];
+
+    VAR socketdev serverSockert;
+    VAR socketdev clientSockert;
+    VAR string data;
+    VAR num pos_coma;
+    VAR string str_eje;
+    VAR string str_valor;
+    VAR num valor_mm;
+    VAR bool exito_conversion;
+    VAR num nAnguloActual := 0; 
+    VAR bool conectado := FALSE;
+
+    PROC main()
+        SocketCreate serverSockert;
+        SocketBind serverSockert, "192.168.125.1", 8000;
+        SocketListen serverSockert;
+        
+        WHILE TRUE DO
+            TPWrite "Esperando conexion de Python...";
+            SocketAccept serverSockert, clientSockert, \Time:=WAIT_MAX; 
+            TPWrite "Conexion OK. Sistema Hibrido Listo.";
+            conectado := TRUE;
+            
+            WHILE conectado DO
+                data := "";
+                SocketReceive clientSockert \Str:= data \Time:=WAIT_MAX;
+                
+                IF data = "HOME" THEN
+                    MoverAHomeSeguro;
+                ELSEIF data = "INICIO" THEN
+                    MoverAInicioSeguro;
+                ELSEIF data = "POS_BOTELLA" THEN
+                    MoverAPosBotella;
+                ELSEIF StrLen(data) > 0 THEN
+                    pos_coma := StrFind(data, 1, ",");
+                    IF pos_coma > 1 THEN
+                        str_eje := StrPart(data, 1, pos_coma - 1);
+                        str_valor := StrPart(data, pos_coma + 1, StrLen(data) - pos_coma);
+                        exito_conversion := StrToVal(str_valor, valor_mm);
+                        IF exito_conversion THEN
+                            IF str_eje = "R" THEN
+                                RotarCamara valor_mm;
+                            ELSEIF str_eje = "V" THEN
+                                ! Comando para ajustar velocidad antes del centrado fino
+                                vTraslacionLenta.v_tcp := valor_mm;
+                                SocketSend clientSockert \Str:="FIN: Velocidad ajustada.";
+                            ELSEIF str_eje = "G" THEN
+                                ! Comando para controlar el Gripper
+                                ControlarGripper valor_mm;
+                            ELSEIF str_eje = "X" OR str_eje = "Y" OR str_eje = "Z" THEN
+                                Trasladar str_eje, valor_mm;
+                            ENDIF
+                        ENDIF
+                    ENDIF
+                ENDIF
+                WaitTime 0.05; 
+            ENDWHILE
+        ENDWHILE
+        
+    ERROR
+        IF ERRNO = ERR_SOCK_CLOSED OR ERRNO = ERR_SOCK_TIMEOUT THEN
+            TPWrite "? Cliente desconectado. Reiniciando servidor...";
+            SocketClose clientSockert;
+            conectado := FALSE;
+            TRYNEXT; 
+        ENDIF
+    ENDPROC
+
+    PROC ControlarGripper(num estado)
+        IF estado = 1 THEN
+            SetDO Gripper, 1;
+            SocketSend clientSockert \Str:="FIN: Gripper Abierto.";
+        ELSEIF estado = 0 THEN
+            SetDO Gripper, 0;
+            SocketSend clientSockert \Str:="FIN: Gripper Cerrado.";
+        ENDIF
+    ERROR
+        IF ERRNO = ERR_SOCK_CLOSED OR ERRNO = ERR_SOCK_TIMEOUT THEN
+            SocketClose clientSockert;
+            conectado := FALSE;
+            RETURN;
+        ENDIF
+        SocketSend clientSockert \Str:="ALERTA: Error controlando Gripper.";
+        RETURN;
+    ENDPROC
+
+    PROC Trasladar(string eje, num valor_total)
+        VAR robtarget pOrigen;
+        VAR robtarget pDestinoFinal;
+        VAR robtarget pPasoIntermedio;
+        VAR jointtarget jPreCheck;
+        VAR num paso_max := 2; 
+        VAR num distancia_faltante;
+        VAR num paso_actual;
+        VAR num signo;
+        VAR num posicion_acumulada := 0;
+
+        IF valor_total = 0 THEN
+            SocketSend clientSockert \Str:="FIN: 0 mm.";
+            RETURN;
+        ENDIF
+
+        pOrigen := CRobT(\Tool:=tool0 \WObj:=Botella);
+        
+        IF eje = "X" THEN pDestinoFinal := Offs(pOrigen, valor_total, 0, 0);
+        ELSEIF eje = "Y" THEN pDestinoFinal := Offs(pOrigen, 0, valor_total, 0);
+        ELSEIF eje = "Z" THEN pDestinoFinal := Offs(pOrigen, 0, 0, valor_total);
+        ENDIF
+        
+        jPreCheck := CalcJointT(pDestinoFinal, tool0 \WObj:=Botella);
+        ConfJ \Off; 
+        distancia_faltante := Abs(valor_total);
+        signo := valor_total / Abs(valor_total); 
+
+        WHILE distancia_faltante > 0 DO
+            IF distancia_faltante > paso_max THEN paso_actual := paso_max;
+            ELSE paso_actual := distancia_faltante; ENDIF
+            
+            posicion_acumulada := posicion_acumulada + (paso_actual * signo);
+            
+            IF eje = "X" THEN pPasoIntermedio := Offs(pOrigen, posicion_acumulada, 0, 0);
+            ELSEIF eje = "Y" THEN pPasoIntermedio := Offs(pOrigen, 0, posicion_acumulada, 0);
+            ELSEIF eje = "Z" THEN pPasoIntermedio := Offs(pOrigen, 0, 0, posicion_acumulada);
+            ENDIF
+            
+            IF distancia_faltante = paso_actual THEN
+                MoveJ pPasoIntermedio, vTraslacionLenta, fine, tool0 \WObj:=Botella;
+            ELSE
+                MoveJ pPasoIntermedio, vTraslacionLenta, z1, tool0 \WObj:=Botella;
+            ENDIF
+            
+            SocketSend clientSockert \Str:="INC: " + NumToStr(paso_actual * signo, 2) + " en " + eje;
+            distancia_faltante := distancia_faltante - paso_actual;
+        ENDWHILE
+        
+        ConfJ \On;
+        SocketSend clientSockert \Str:="FIN: Destino alcanzado.";
+        
+    ERROR
+        IF ERRNO = ERR_SOCK_CLOSED OR ERRNO = ERR_SOCK_TIMEOUT THEN
+            StopMove; ClearPath; StartMove; ConfJ \On;
+            TPWrite "? ALERTA: Movimiento abortado por desconexión.";
+            SocketClose clientSockert;
+            conectado := FALSE;
+            RETURN; 
+        ENDIF
+        SocketSend clientSockert \Str:="ALERTA: Error de movimiento.";
+        RETURN;
+    ENDPROC
+
+    PROC RotarCamara(num anguloDestino)
+        VAR robtarget pActual;
+        VAR robtarget pDestino;
+        VAR num anguloGiro;
+        VAR jointtarget jPreCheck;
+
+        anguloGiro := anguloDestino - nAnguloActual;
+
+        IF anguloGiro <> 0 THEN
+            pActual := CRobT(\Tool:=tool0 \WObj:=Botella);
+            pDestino := RelTool(pActual, 0, 0, 0 \Rz:=anguloGiro);
+            
+            jPreCheck := CalcJointT(pDestino, tool0 \WObj:=Botella);
+            ConfJ \Off; 
+            
+            MoveJ pDestino, vRotacionNormal, fine, tool0 \WObj:=Botella;
+            
+            ConfJ \On;
+            nAnguloActual := anguloDestino;
+        ENDIF
+
+        SocketSend clientSockert \Str:="FIN: Rotacion OK.";
+        
+    ERROR
+        IF ERRNO = ERR_SOCK_CLOSED OR ERRNO = ERR_SOCK_TIMEOUT THEN
+            SocketClose clientSockert;
+            conectado := FALSE;
+            RETURN;
+        ENDIF
+        
+        ConfJ \On;
+        SocketSend clientSockert \Str:="ALERTA: Singularidad evadida en rotacion.";
+        RETURN;
+    ENDPROC
+
+    PROC MoverAHomeSeguro()
+        MoveAbsJ jHomeSeguro, v50, fine, tool0;
+        nAnguloActual := 0;
+        SocketSend clientSockert \Str:="FIN: Robot en HOME.";
+    ERROR
+        IF ERRNO = ERR_SOCK_CLOSED THEN SocketClose clientSockert; conectado := FALSE; RETURN; ENDIF
+    ENDPROC
+
+    PROC MoverAInicioSeguro()
+        MoveJ INICIO, v50, fine, tool0 \WObj:=Botella;
+        nAnguloActual := 0;
+        SocketSend clientSockert \Str:="FIN: Robot en INICIO (Listo para IA).";
+    ERROR
+        IF ERRNO = ERR_SOCK_CLOSED THEN SocketClose clientSockert; conectado := FALSE; RETURN; ENDIF
+    ENDPROC
+
+    PROC MoverAPosBotella()
+        MoveJ Pos_Botella, v50, fine, tool0 \WObj:=Botella;
+        SocketSend clientSockert \Str:="FIN: Robot en POS_BOTELLA.";
+    ERROR
+        IF ERRNO = ERR_SOCK_CLOSED THEN SocketClose clientSockert; conectado := FALSE; RETURN; ENDIF
+    ENDPROC
+    
+    PROC Path_10()
+        MoveJ Botella_1,v100,fine,tool0\WObj:=Botella;
+        MoveJ HOME,v100,fine,tool0\WObj:=Botella;
+    ENDPROC
+    
+    PROC Path_HOME()
+        MoveJ HOME,v50,fine,tool0\WObj:=Botella;
+    ENDPROC
+    
+    PROC Path_INICIO()
+        MoveJ INICIO,v50,fine,tool0\WObj:=Botella;
+    ENDPROC
+    
+    PROC Path_Probando()
+        MoveJ HOME,v50,fine,tool0\WObj:=Botella;
+        MoveJ INICIO,v50,fine,tool0\WObj:=Botella;
+        MoveJ Botella_1,v50,fine,tool0\WObj:=Botella;
+        MoveJ Pos_Botella,v50,fine,tool0\WObj:=Botella;
+        MoveJ Pos_Botella_2,v50,fine,tool0\WObj:=Botella;
+        MoveJ Target_10,v50,fine,tool0\WObj:=Botella;
+    ENDPROC
+    
+ENDMODULE

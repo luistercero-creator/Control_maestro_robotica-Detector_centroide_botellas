@@ -11,11 +11,40 @@ from keras.models import load_model
 # === CONFIGURACIONES DE RED Y RUTAS ===
 ROBOT_IP = "192.168.125.1" 
 ROBOT_PORT = 8000
-RUTA_PROYECTO = r"C:\Users\VICTUS\Documents\A_Fotos_Botella" 
+RUTA_PROYECTO = "modelos" 
+
+# === COMPENSACIÓN DE PARALAJE (OPCIONAL) ===
+# Si después de la Fase 3 notas que el gripper sigue chocando por un par de milímetros,
+# ajusta estos valores para mover la cruz roja ligeramente y engañar a la cámara.
+OFFSET_X_PIXELES = 0    
+OFFSET_Y_PIXELES = 0   
+
+# === VARIABLES AJUSTABLES DE MOVIMIENTO Z (EN MILÍMETROS) ===
+PASO_Z_EVASION = -1        
+PASO_Z_BUSQUEDA = -20      
+PASO_Z_POST_CENTRO_1 = -50 # Bajada tras Fase 1
+PASO_Z_ACERCAMIENTO = -80  # Bajada tras Fase 2 (Acerca la cámara a ras de botella)
+PASO_Z_INSERCION = -120    # Inserción final con gripper rotado
+PASO_Z_DESCARGA = -300     
+PASO_Z_SUBIDA_FINAL = 50   
+
+# === VARIABLES AJUSTABLES DE TIEMPO (EN MILISEGUNDOS) ===
+TIEMPO_ESPERA_CENTRO_1 = 2000     
+TIEMPO_ESPERA_CENTRO_2 = 1000     
+TIEMPO_ESPERA_CENTRO_3 = 1000     
+TIEMPO_PRE_GRIPPER_ABRIR = 1000   
+TIEMPO_PRE_INSERCION = 2000       
+TIEMPO_POST_INSERCION = 1000      
+TIEMPO_PRE_TRASLADO = 2000        
 
 # === PARÁMETROS DE VISIÓN ARTIFICIAL ===
 UMBRAL_CONFIANZA = 0.90 
-TOLERANCIA_CENTRO = 30
+TOLERANCIA_CENTRO = 30       # Fase 1: Círculo grande
+TOLERANCIA_CENTRO_FINA = 5   # Fase 2: Círculo diminuto
+TOLERANCIA_CENTRO_ULTRA = 5  # Fase 3: Círculo microscópico
+RAFAGA_NORMAL = 30           # mm a deslizar en fase 1
+RAFAGA_FINA = 5              # mm a deslizar en fase 2
+RAFAGA_ULTRA = 1             # mm a deslizar en fase 3
 FACTOR_SUAVIZADO = 0.2 
 FACTOR_MM_PX = 0.05  
 
@@ -24,18 +53,10 @@ CAMARA_ROTADA_90 = True
 INVERSOR_ROBOT_X = 1     
 INVERSOR_ROBOT_Y = 1     
 
-# === CONFIGURACIÓN DE SECUENCIA Z (MEDIDAS RELATIVAS EN MM) ===
-# Modifica estas variables si la altura de la mesa o la botella cambia.
-PASO_Z_BUSQUEDA = -20      # Baja para comenzar la búsqueda visual
-PASO_Z_POST_CENTRO_1 = -50 # Baja intermedia tras el primer centrado
-PASO_Z_POST_CENTRO_2 = -50 # Baja al terminar el segundo centrado (Z aprox: -120)
-PASO_Z_ACERCAMIENTO = -80  # Baja rápido después de poner la rotación en 0 (Z aprox: -200)
-PASO_Z_INSERCION = -40     # Inserción final con permiso humano (Z aprox: -240)
-
 class RobotGUI:
     def __init__(self, root):
         self.root = root
-        self.root.title("Control IA + Secuencia Automática")
+        self.root.title("Control IA + Secuencia 100% Automática (3 Fases)")
         self.root.geometry("550x950") 
         self.root.configure(bg="#2d2d2d")
         
@@ -53,6 +74,7 @@ class RobotGUI:
         self.estado_secuencia = "IDLE"
         self.botella_detectada = False
         self.tiempo_inicio_busqueda = 0
+        self.timer_bloqueo = None 
         
         # --- 1. PANEL DE COORDENADAS ---
         frame_coords = tk.Frame(root, bg="#2d2d2d")
@@ -79,15 +101,15 @@ class RobotGUI:
         # --- 3. PANEL DE SECUENCIA AUTOMÁTICA ---
         frame_seq = tk.Frame(root, bg="#2d2d2d", bd=2, relief=tk.RIDGE)
         frame_seq.pack(pady=10, fill=tk.X, padx=20)
-        tk.Label(frame_seq, text="SECUENCIA DE INSERCIÓN BOTELLA", bg="#2d2d2d", fg="white", font=("Arial", 10, "bold")).pack(pady=5)
+        tk.Label(frame_seq, text="SECUENCIA AUTÓNOMA CON GRIPPER", bg="#2d2d2d", fg="white", font=("Arial", 10, "bold")).pack(pady=5)
         
-        self.btn_mov_auto = tk.Button(frame_seq, text="🚀 INICIAR MOV. AUTO.", bg="#673AB7", fg="white", font=("Arial", 12, "bold"), command=self.iniciar_secuencia, state=tk.DISABLED)
+        self.btn_mov_auto = tk.Button(frame_seq, text="🚀 INICIAR MOVIMIENTO AUTÓNOMO", bg="#673AB7", fg="white", font=("Arial", 12, "bold"), command=self.iniciar_secuencia, state=tk.DISABLED)
         self.btn_mov_auto.pack(fill=tk.X, padx=10, pady=5)
         
         frame_seq_btns = tk.Frame(frame_seq, bg="#2d2d2d")
         frame_seq_btns.pack(fill=tk.X, padx=10, pady=5)
         
-        self.btn_continuar = tk.Button(frame_seq_btns, text="✔ Continuar", bg="#4CAF50", fg="white", font=("Arial", 10, "bold"), command=self.continuar_secuencia, state=tk.DISABLED)
+        self.btn_continuar = tk.Button(frame_seq_btns, text="✔ Secuencia 100% Automática", bg="#607D8B", fg="white", font=("Arial", 10, "bold"), state=tk.DISABLED)
         self.btn_continuar.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
         self.btn_ajus_manual = tk.Button(frame_seq_btns, text="⚙ Ajus. Manual", bg="#FFC107", fg="black", font=("Arial", 10, "bold"), command=self.activar_ajuste_manual, state=tk.DISABLED)
         self.btn_ajus_manual.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=5)
@@ -95,7 +117,7 @@ class RobotGUI:
         # --- 4. COMANDOS MANUALES Y PRUEBA IA ---
         frame_cmd = tk.Frame(root, bg="#2d2d2d")
         frame_cmd.pack(pady=5, fill=tk.X, padx=20)
-        tk.Label(frame_cmd, text="Comando Manual (ej. X,50 | R,90):", bg="#2d2d2d", fg="white", font=("Arial", 10)).pack(anchor=tk.W)
+        tk.Label(frame_cmd, text="Comando Manual (ej. X,50 | R,90 | G,1 | V,5):", bg="#2d2d2d", fg="white", font=("Arial", 10)).pack(anchor=tk.W)
         self.entry_cmd = tk.Entry(frame_cmd, font=("Arial", 14))
         self.entry_cmd.pack(fill=tk.X, pady=5)
         self.entry_cmd.bind("<Return>", lambda event: self.enviar_comando())
@@ -109,13 +131,13 @@ class RobotGUI:
         frame_actions = tk.Frame(root, bg="#2d2d2d")
         frame_actions.pack(pady=5, fill=tk.X, padx=20)
         
-        self.btn_home = tk.Button(frame_actions, text="HOME", bg="#FF9800", fg="white", font=("Arial", 9, "bold"), command=lambda: self.enviar_texto("HOME"), state=tk.DISABLED)
+        self.btn_home = tk.Button(frame_actions, text="HOME", bg="#FF9800", fg="white", font=("Arial", 9, "bold"), command=lambda: self.enviar_movimiento("HOME"), state=tk.DISABLED)
         self.btn_home.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
         
-        self.btn_inicio = tk.Button(frame_actions, text="INICIO", bg="#00BCD4", fg="black", font=("Arial", 9, "bold"), command=lambda: self.enviar_texto("INICIO"), state=tk.DISABLED)
+        self.btn_inicio = tk.Button(frame_actions, text="INICIO", bg="#00BCD4", fg="black", font=("Arial", 9, "bold"), command=lambda: self.enviar_movimiento("INICIO"), state=tk.DISABLED)
         self.btn_inicio.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
         
-        self.btn_pos_botella = tk.Button(frame_actions, text="POS_BOTELLA", bg="#E91E63", fg="white", font=("Arial", 8, "bold"), command=lambda: self.enviar_texto("POS_BOTELLA"), state=tk.DISABLED)
+        self.btn_pos_botella = tk.Button(frame_actions, text="POS_BOTELLA", bg="#E91E63", fg="white", font=("Arial", 8, "bold"), command=lambda: self.enviar_movimiento("POS_BOTELLA"), state=tk.DISABLED)
         self.btn_pos_botella.pack(side=tk.LEFT, expand=True, fill=tk.X, padx=2)
 
         self.btn_stop = tk.Button(root, text="⚠ PARO DE EMERGENCIA ⚠", bg="#B71C1C", fg="white", font=("Arial", 16, "bold"), command=self.enviar_stop, state=tk.DISABLED)
@@ -141,48 +163,67 @@ class RobotGUI:
         self.lbl_z.config(text=f"Z: {self.pos_z:.2f}")
 
     def procesar_respuesta(self, respuesta):
-        if "FIN:" in respuesta or "ALERTA:" in respuesta:
+        if self.timer_bloqueo:
+            self.timer_bloqueo.cancel()
+
+        # BLINDAJE DE RED: Separa mensajes pegados (ej. "YFIN:")
+        resp_limpia = respuesta.replace("FIN:", " FIN: ").replace("ALERTA:", " ALERTA: ").replace("INC:", " INC: ")
+
+        if "INC:" in resp_limpia:
+            fragmentos = resp_limpia.split("INC:")
+            for frag in fragmentos[1:]: 
+                partes = frag.split()
+                if len(partes) >= 3:
+                    try:
+                        valor = float(partes[0])
+                        eje = partes[2][0] 
+                        if eje == "X": self.pos_x += valor
+                        elif eje == "Y": self.pos_y += valor
+                        elif eje == "Z": self.pos_z += valor
+                    except: pass
+            self.actualizar_displays()
+
+        if "FIN:" in resp_limpia or "ALERTA:" in resp_limpia:
             self.robot_ocupado = False
             self.avanzar_secuencia()
 
-        if "INC:" in respuesta:
-            partes = respuesta.split()
-            try:
-                valor = float(partes[1])
-                eje = partes[3] 
-                if eje == "X": self.pos_x += valor
-                elif eje == "Y": self.pos_y += valor
-                elif eje == "Z": self.pos_z += valor
-                self.actualizar_displays()
-            except: pass
-        elif "HOME" in respuesta:
+        elif "HOME" in resp_limpia:
             self.pos_x = self.pos_y = self.pos_z = 0.0
             self.actualizar_displays()
-        elif "INICIO" in respuesta:
+        elif "INICIO" in resp_limpia:
             self.pos_x = self.pos_y = 0.0
             self.pos_z = -20.0 
             self.actualizar_displays()
-        elif "POS_BOTELLA" in respuesta:
+        elif "POS_BOTELLA" in resp_limpia:
             self.log("🤖 Robot alcanzó el punto absoluto POS_BOTELLA.")
             
         self.log(f"🤖 Robot: {respuesta}")
 
     # ==========================================
-    # MÁQUINA DE ESTADOS (NUEVO CEREBRO)
+    # MÁQUINA DE ESTADOS (CEREBRO AUTÓNOMO)
     # ==========================================
     def iniciar_secuencia(self):
         if not self.conectado: return
-        self.log("\n🚀 Iniciando Secuencia Automática...")
-        self.estado_secuencia = "ROTATING_INIT"
-        self.auto_alineando = False 
-        self.btn_continuar.config(state=tk.DISABLED)
+        self.log("\n🚀 Iniciando Secuencia 100% Autónoma...")
+        
         self.btn_ajus_manual.config(state=tk.DISABLED)
-        self.enviar_texto("R,-90")
+        self.btn_mov_auto.config(state=tk.DISABLED)
+        
+        self.estado_secuencia = "EVADING_SINGULARITY"
+        self.auto_alineando = False 
+        self.log(f"Sacando al robot de la singularidad (Z, {PASO_Z_EVASION})...")
+        self.enviar_movimiento(f"Z,{PASO_Z_EVASION}")
 
     def avanzar_secuencia(self):
-        if self.estado_secuencia == "ROTATING_INIT":
+        # --- PREPARACIÓN VISUAL ---
+        if self.estado_secuencia == "EVADING_SINGULARITY":
+            self.estado_secuencia = "ROTATING_INIT"
+            self.log("Singularidad evadida. Girando cámara -90°...")
+            self.enviar_movimiento("R,-90")
+            
+        elif self.estado_secuencia == "ROTATING_INIT":
             self.estado_secuencia = "LOWERING_INIT"
-            self.enviar_texto(f"Z,{PASO_Z_BUSQUEDA}")
+            self.enviar_movimiento(f"Z,{PASO_Z_BUSQUEDA}")
             
         elif self.estado_secuencia == "LOWERING_INIT":
             self.estado_secuencia = "SEARCHING_WAIT"
@@ -191,84 +232,177 @@ class RobotGUI:
             
         elif self.estado_secuencia == "SEARCH_PATTERN_1":
             self.estado_secuencia = "SEARCH_PATTERN_2"
-            self.enviar_texto("X,100")
+            self.enviar_movimiento("X,100")
             
         elif self.estado_secuencia == "SEARCH_PATTERN_2":
             self.estado_secuencia = "SEARCH_PATTERN_3"
-            self.enviar_texto("Y,-200")
+            self.enviar_movimiento("Y,-200")
             
         elif self.estado_secuencia == "SEARCH_PATTERN_3":
             self.estado_secuencia = "IDLE"
             self.log("❌ Búsqueda fallida. Botella no encontrada.")
-            messagebox.showwarning("Error IA", "Botella no encontrada en el área de búsqueda.")
+            self.btn_mov_auto.config(state=tk.NORMAL)
+            messagebox.showwarning("Error IA", "Botella no encontrada en el área.")
             
+        # --- FASE 2: TRAS EL PRIMER CENTRADO VISUAL ---
         elif self.estado_secuencia == "LOWERING_50_1":
+            self.estado_secuencia = "SPEED_DOWN"
+            self.log("Reduciendo velocidad para Fase 2 de alta precisión...")
+            self.enviar_movimiento("V,5")
+            
+        elif self.estado_secuencia == "SPEED_DOWN":
             self.estado_secuencia = "CENTERING_2"
             self.auto_alineando = True
-            self.log("Iniciando segundo centrado fino...")
+            self.log("Iniciando Fase 2 (Precisión Fina)...")
             
-        elif self.estado_secuencia == "LOWERING_50_2":
+        # --- FASE 3: ACERCAMIENTO Y TERCER CENTRADO VISUAL ---
+        elif self.estado_secuencia == "SPEED_UP":
+            self.estado_secuencia = "LOWERING_80"
+            self.log(f"Velocidad restaurada. Bajando {PASO_Z_ACERCAMIENTO}mm hacia Fase 3...")
+            self.enviar_movimiento(f"Z,{PASO_Z_ACERCAMIENTO}")
+
+        elif self.estado_secuencia == "LOWERING_80":
+            self.estado_secuencia = "SPEED_DOWN_3"
+            self.log("Reduciendo velocidad para Fase 3 (Ultra Precisión final)...")
+            self.enviar_movimiento("V,5")
+
+        elif self.estado_secuencia == "SPEED_DOWN_3":
+            self.estado_secuencia = "CENTERING_3"
+            self.auto_alineando = True
+            self.log("Iniciando Fase 3 (Microscópica) para evitar paralaje...")
+            
+        # --- TRAS FASE 3: ROTAR GRIPPER Y PREPARAR INSERCIÓN ---
+        elif self.estado_secuencia == "SPEED_UP_FINAL":
             self.estado_secuencia = "ROTATING_ZERO"
-            self.enviar_texto("R,0")
+            self.log("Velocidad restaurada. Rotando a 0° para alinear gripper...")
+            self.enviar_movimiento("R,0")
             
         elif self.estado_secuencia == "ROTATING_ZERO":
-            self.estado_secuencia = "LOWERING_80"
-            self.enviar_texto(f"Z,{PASO_Z_ACERCAMIENTO}")
-            
-        elif self.estado_secuencia == "LOWERING_80":
-            self.estado_secuencia = "WAITING_USER_2"
-            self.log(f"⏸ Pausa: Acercamiento listo. Confirme para bajar los últimos {abs(PASO_Z_INSERCION)}mm.")
-            self.btn_continuar.config(state=tk.NORMAL)
-            self.btn_ajus_manual.config(state=tk.NORMAL)
-            
-        elif self.estado_secuencia == "LOWERING_FINAL_40":
-            # NUEVA PAUSA: Espera confirmación antes de ir a Pos_Botella
-            self.estado_secuencia = "WAITING_USER_3"
-            self.log("⏸ Pausa: Inserción completada. Confirme para mover a POS_BOTELLA.")
-            self.btn_continuar.config(state=tk.NORMAL)
-            self.btn_ajus_manual.config(state=tk.NORMAL)
-            
-        elif self.estado_secuencia == "MOVING_POS_BOTELLA":
-            self.estado_secuencia = "IDLE"
-            self.log("✅ ¡SECUENCIA DE INSERCIÓN Y TRASLADO COMPLETADA CON ÉXITO!")
+            self.estado_secuencia = "WAITING_AUTO_PRE_GRIPPER"
+            self.log(f"⏸ Rotación lista. Esperando {TIEMPO_PRE_GRIPPER_ABRIR/1000}s de seguridad...")
+            self.root.after(TIEMPO_PRE_GRIPPER_ABRIR, self.abrir_gripper_pre_insert)
 
+        # --- SECUENCIA DEL GRIPPER E INSERCIÓN ---
+        elif self.estado_secuencia == "OPEN_GRIPPER_PRE_INSERT":
+            self.estado_secuencia = "WAITING_AUTO_PRE_INSERCION"
+            self.log(f"Gripper abierto. Esperando {TIEMPO_PRE_INSERCION/1000}s de estabilización...")
+            self.root.after(TIEMPO_PRE_INSERCION, self.ejecutar_insercion)
+
+        elif self.estado_secuencia == "LOWERING_FINAL_INSERT":
+            self.estado_secuencia = "WAITING_AUTO_POST_INSERCION"
+            self.log(f"Inserción completada. Esperando {TIEMPO_POST_INSERCION/1000}s...")
+            self.root.after(TIEMPO_POST_INSERCION, self.cerrar_gripper_post_insert)
+
+        elif self.estado_secuencia == "CLOSE_GRIPPER_POST_INSERT":
+            self.estado_secuencia = "WAITING_AUTO_PRE_TRASLADO"
+            self.log(f"Gripper cerrado. Esperando {TIEMPO_PRE_TRASLADO/1000}s antes del traslado final...")
+            self.root.after(TIEMPO_PRE_TRASLADO, self.ir_a_pos_botella)
+
+        # --- TRASLADO Y DESCARGA FINAL ---
+        elif self.estado_secuencia == "MOVING_POS_BOTELLA":
+            self.estado_secuencia = "LOWERING_DESCARGA"
+            self.log(f"Bajando la botella a la mesa (Z, {PASO_Z_DESCARGA})...")
+            self.enviar_movimiento(f"Z,{PASO_Z_DESCARGA}")
+
+        elif self.estado_secuencia == "LOWERING_DESCARGA":
+            self.estado_secuencia = "OPEN_GRIPPER_RELEASE"
+            self.log("Abriendo gripper para soltar la botella...")
+            self.enviar_movimiento("G,1")
+
+        elif self.estado_secuencia == "OPEN_GRIPPER_RELEASE":
+            self.estado_secuencia = "RISING_FINAL"
+            self.log(f"Subiendo brazo para escapar (Z, {PASO_Z_SUBIDA_FINAL})...")
+            self.enviar_movimiento(f"Z,{PASO_Z_SUBIDA_FINAL}")
+
+        elif self.estado_secuencia == "RISING_FINAL":
+            self.estado_secuencia = "CLOSE_GRIPPER_FINAL"
+            self.log("Cerrando gripper final...")
+            self.enviar_movimiento("G,0")
+
+        elif self.estado_secuencia == "CLOSE_GRIPPER_FINAL":
+            self.estado_secuencia = "MOVING_TO_HOME"
+            self.log("Regresando a HOME...")
+            self.enviar_movimiento("HOME")
+
+        elif self.estado_secuencia == "MOVING_TO_HOME":
+            self.estado_secuencia = "IDLE"
+            self.btn_mov_auto.config(state=tk.NORMAL)
+            self.log("✅ ¡SECUENCIA DE INSERCIÓN Y DESCARGA 100% COMPLETADA!")
+
+    # --- FUNCIONES DE TIEMPO Y TRANSICIÓN ---
     def ejecutar_fase_2(self):
         self.estado_secuencia = "LOWERING_50_1"
         self.log(f"Ejecutando bajada intermedia ({PASO_Z_POST_CENTRO_1}mm en Z)...")
-        self.enviar_texto(f"Z,{PASO_Z_POST_CENTRO_1}")
+        self.enviar_movimiento(f"Z,{PASO_Z_POST_CENTRO_1}")
 
-    def continuar_secuencia(self):
-        self.btn_continuar.config(state=tk.DISABLED)
-        self.btn_ajus_manual.config(state=tk.DISABLED)
-        
-        if self.estado_secuencia == "WAITING_USER_1":
-            self.estado_secuencia = "LOWERING_50_2"
-            self.log(f"Continuando: Bajando {PASO_Z_POST_CENTRO_2}mm...")
-            self.enviar_texto(f"Z,{PASO_Z_POST_CENTRO_2}")
-            
-        elif self.estado_secuencia == "WAITING_USER_2":
-            self.estado_secuencia = "LOWERING_FINAL_40"
-            self.log(f"Continuando: Inserción final ({PASO_Z_INSERCION}mm)...")
-            self.enviar_texto(f"Z,{PASO_Z_INSERCION}")
-            
-        elif self.estado_secuencia == "WAITING_USER_3":
-            # NUEVO MOVIMIENTO: Viaje a Pos_Botella tras confirmar inserción
-            self.estado_secuencia = "MOVING_POS_BOTELLA"
-            self.log("Llevando hacia el punto final POS_BOTELLA...")
-            self.enviar_texto("POS_BOTELLA")
+    def continuar_fase_3(self):
+        self.estado_secuencia = "SPEED_UP"
+        self.enviar_movimiento("V,20")
+
+    def continuar_fase_4(self):
+        self.estado_secuencia = "SPEED_UP_FINAL"
+        self.enviar_movimiento("V,20")
+
+    def abrir_gripper_pre_insert(self):
+        self.estado_secuencia = "OPEN_GRIPPER_PRE_INSERT"
+        self.log("Abriendo gripper antes de insertar...")
+        self.enviar_movimiento("G,1")
+
+    def ejecutar_insercion(self):
+        self.estado_secuencia = "LOWERING_FINAL_INSERT"
+        self.log(f"Ejecutando inserción final ({PASO_Z_INSERCION}mm)...")
+        self.enviar_movimiento(f"Z,{PASO_Z_INSERCION}")
+
+    def cerrar_gripper_post_insert(self):
+        self.estado_secuencia = "CLOSE_GRIPPER_POST_INSERT"
+        self.log("Cerrando gripper para sujetar la botella...")
+        self.enviar_movimiento("G,0")
+
+    def ir_a_pos_botella(self):
+        self.estado_secuencia = "MOVING_POS_BOTELLA"
+        self.log("Llevando hacia el punto de descarga POS_BOTELLA...")
+        self.enviar_movimiento("POS_BOTELLA")
 
     def activar_ajuste_manual(self):
-        self.log("⚙ Ajuste Manual activado. Mueva el robot con comandos y presione 'Continuar'.")
+        self.log("⚙ Ajuste Manual activado. Mueva el robot con comandos.")
         self.btn_ajus_manual.config(state=tk.DISABLED)
 
     # ==========================================
-    # FUNCIONES DE COMUNICACIÓN
+    # FUNCIONES DE COMUNICACIÓN Y CONTROL
     # ==========================================
+    def liberar_bloqueo_timeout(self):
+        if self.robot_ocupado:
+            self.robot_ocupado = False
+            self.log("🔓 TIMEOUT: El robot tardó demasiado en responder. Sistema desbloqueado.")
+            if self.estado_secuencia != "IDLE":
+                self.btn_mov_auto.config(state=tk.NORMAL)
+
+    def enviar_movimiento(self, comando):
+        if self.conectado:
+            self.robot_ocupado = True
+            if self.timer_bloqueo:
+                self.timer_bloqueo.cancel()
+            self.timer_bloqueo = threading.Timer(8.0, self.liberar_bloqueo_timeout)
+            self.timer_bloqueo.start()
+            
+            try:
+                self.sock.send(comando.encode("utf-8"))
+                self.log(f">> {comando}")
+            except:
+                self.desconectar()
+
+    def enviar_comando(self):
+        cmd = self.entry_cmd.get().strip().upper()
+        if cmd: 
+            self.enviar_movimiento(cmd)
+            self.entry_cmd.delete(0, tk.END)
+
     def conectar(self):
         try:
             self.sock = socket.socket()
             self.sock.connect((ROBOT_IP, ROBOT_PORT))
             self.conectado = True
+            self.robot_ocupado = False
             
             self.btn_conectar.config(state=tk.DISABLED)
             self.btn_desconectar.config(state=tk.NORMAL)
@@ -279,6 +413,7 @@ class RobotGUI:
             self.btn_pos_botella.config(state=tk.NORMAL)
             self.btn_stop.config(state=tk.NORMAL)
             self.btn_mov_auto.config(state=tk.NORMAL)
+            self.btn_ajus_manual.config(state=tk.NORMAL)
             
             self.log(f"✔ Conectado a {ROBOT_IP}")
             threading.Thread(target=self.escuchar_robot, daemon=True).start()
@@ -288,6 +423,7 @@ class RobotGUI:
         self.conectado = False
         self.auto_alineando = False
         self.estado_secuencia = "IDLE"
+        self.robot_ocupado = False
         self.btn_auto.config(text="▶ INICIAR AUTO-ALINEACIÓN", bg="#9C27B0")
         
         if self.sock: 
@@ -303,7 +439,6 @@ class RobotGUI:
         self.btn_pos_botella.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.DISABLED)
         self.btn_mov_auto.config(state=tk.DISABLED)
-        self.btn_continuar.config(state=tk.DISABLED)
         self.btn_ajus_manual.config(state=tk.DISABLED)
         self.log("❌ Desconectado.")
 
@@ -316,20 +451,6 @@ class RobotGUI:
                     self.root.after(0, self.desconectar)
                     break
             except: break
-
-    def enviar_texto(self, texto):
-        if self.conectado:
-            try: 
-                self.sock.send(texto.encode("utf-8"))
-                self.log(f">> {texto}")
-            except: self.desconectar()
-
-    def enviar_comando(self):
-        cmd = self.entry_cmd.get().strip().upper()
-        if cmd: 
-            self.robot_ocupado = True 
-            self.enviar_texto(cmd)
-            self.entry_cmd.delete(0, tk.END)
 
     def enviar_stop(self):
         self.log("⚠ PARO SOLICITADO: Cortando conexion...")
@@ -352,7 +473,6 @@ class RobotGUI:
         self.btn_pos_botella.config(state=tk.DISABLED)
         self.btn_stop.config(state=tk.DISABLED)
         self.btn_mov_auto.config(state=tk.DISABLED)
-        self.btn_continuar.config(state=tk.DISABLED)
         self.btn_ajus_manual.config(state=tk.DISABLED)
         self.log("Reconectando en 1.5s...")
         self.root.after(1500, self.conectar)
@@ -380,6 +500,7 @@ class RobotGUI:
     def toggle_auto_alineacion(self):
         if not self.auto_alineando:
             self.auto_alineando = True
+            self.robot_ocupado = False
             self.btn_auto.config(text="⏹ DETENER AUTO-ALINEACIÓN", bg="#FF5722")
             self.log("▶ Alineación de Prueba ACTIVADA.")
         else:
@@ -408,8 +529,6 @@ class RobotGUI:
 
         ancho_camara = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         alto_camara = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        centro_camara_x = ancho_camara // 2
-        centro_camara_y = alto_camara // 2
         np.set_printoptions(suppress=True)
 
         centro_suavizado_x = 0; centro_suavizado_y = 0; radio_suavizado = 0
@@ -419,9 +538,24 @@ class RobotGUI:
             ret, frame = cap.read()
             if not ret: break
 
+            # APLICAMOS EL OFFSET DE PARALAJE AL CENTRO DE LA CÁMARA
+            centro_camara_x = (ancho_camara // 2) + OFFSET_X_PIXELES
+            centro_camara_y = (alto_camara // 2) + OFFSET_Y_PIXELES
+
+            # --- DINAMISMO DE PRECISIÓN (3 NIVELES) ---
+            tolerancia_actual = TOLERANCIA_CENTRO
+            rafaga_actual = RAFAGA_NORMAL
+
+            if self.estado_secuencia == "CENTERING_2":
+                tolerancia_actual = TOLERANCIA_CENTRO_FINA
+                rafaga_actual = RAFAGA_FINA
+            elif self.estado_secuencia == "CENTERING_3":
+                tolerancia_actual = TOLERANCIA_CENTRO_ULTRA
+                rafaga_actual = RAFAGA_ULTRA
+
             cv2.line(frame, (centro_camara_x, 0), (centro_camara_x, alto_camara), (200, 200, 200), 1)
             cv2.line(frame, (0, centro_camara_y), (ancho_camara, centro_camara_y), (200, 200, 200), 1)
-            cv2.circle(frame, (centro_camara_x, centro_camara_y), TOLERANCIA_CENTRO, (255, 255, 0), 1)
+            cv2.circle(frame, (centro_camara_x, centro_camara_y), tolerancia_actual, (255, 255, 0), 1)
 
             img_resize = cv2.resize(frame, (224, 224), interpolation=cv2.INTER_AREA)
             img_norm = (np.asarray(img_resize, dtype=np.float32).reshape(1, 224, 224, 3) / 127.5) - 1
@@ -435,7 +569,7 @@ class RobotGUI:
             if "0" in clase and confianza > UMBRAL_CONFIANZA:
                 self.botella_detectada = True
                 
-                # INTERRUPTOR DE BÚSQUEDA: Si la ve mientras barrea o espera, aborta y centra
+                # INTERRUPTOR DE BÚSQUEDA
                 if self.estado_secuencia in ["SEARCHING_WAIT", "SEARCH_PATTERN_1", "SEARCH_PATTERN_2", "SEARCH_PATTERN_3"]:
                     self.log("👁 ¡Botella detectada! Abortando búsqueda y centrando...")
                     self.estado_secuencia = "CENTERING_1"
@@ -473,24 +607,30 @@ class RobotGUI:
                         error_robot_y = error_camara_y * INVERSOR_ROBOT_Y
 
                     # --- EVALUACIÓN DE CENTRADO EXITOSO ---
-                    if abs(error_robot_x) <= TOLERANCIA_CENTRO and abs(error_robot_y) <= TOLERANCIA_CENTRO:
+                    if abs(error_robot_x) <= tolerancia_actual and abs(error_robot_y) <= tolerancia_actual:
                         estado, color_estado = "¡ALINEADO PERFECTAMENTE!", (0, 255, 0)
                         
-                        if self.auto_alineando and not self.centrado_en_curso:
+                        # EL CANDADO MAESTRO DE RED
+                        if self.auto_alineando and not self.centrado_en_curso and not self.robot_ocupado and self.conectado:
                             self.centrado_en_curso = True
                             
                             if self.estado_secuencia == "CENTERING_1":
                                 self.auto_alineando = False
-                                self.estado_secuencia = "WAITING_2S"
-                                self.log("🏁 Primer centrado exitoso. Esperando 2s...")
-                                self.root.after(2000, self.ejecutar_fase_2)
+                                self.estado_secuencia = "WAITING_AUTO_CENTRO_1"
+                                self.log(f"🏁 Fase 1 de centrado exitosa. Esperando {TIEMPO_ESPERA_CENTRO_1/1000}s...")
+                                self.root.after(TIEMPO_ESPERA_CENTRO_1, self.ejecutar_fase_2)
                                 
                             elif self.estado_secuencia == "CENTERING_2":
                                 self.auto_alineando = False
-                                self.estado_secuencia = "WAITING_USER_1"
-                                self.log("⏸ Segundo centrado exitoso. ¿Desea Continuar o Ajustar?")
-                                self.root.after(0, lambda: self.btn_continuar.config(state=tk.NORMAL))
-                                self.root.after(0, lambda: self.btn_ajus_manual.config(state=tk.NORMAL))
+                                self.estado_secuencia = "WAITING_AUTO_CENTRO_2"
+                                self.log(f"⏸ Fase 2 de centrado exitosa. Esperando {TIEMPO_ESPERA_CENTRO_2/1000}s...")
+                                self.root.after(TIEMPO_ESPERA_CENTRO_2, self.continuar_fase_3)
+
+                            elif self.estado_secuencia == "CENTERING_3":
+                                self.auto_alineando = False
+                                self.estado_secuencia = "WAITING_AUTO_CENTRO_3"
+                                self.log(f"⏸ Fase 3 (Ultra Precisión) exitosa. Esperando {TIEMPO_ESPERA_CENTRO_3/1000}s...")
+                                self.root.after(TIEMPO_ESPERA_CENTRO_3, self.continuar_fase_4)
                                 
                             elif self.estado_secuencia == "IDLE": 
                                 self.log("🏁 ¡ALINEACIÓN PERFECTA (Modo Prueba)!")
@@ -504,22 +644,20 @@ class RobotGUI:
                     # --- DESLIZAMIENTO DE CORRECCIÓN ---
                     if self.auto_alineando:
                         if not self.robot_ocupado:
-                            if abs(error_robot_x) > TOLERANCIA_CENTRO:
-                                self.robot_ocupado = True
+                            if abs(error_robot_x) > tolerancia_actual:
                                 self.eje_actual_ia = "X"
-                                dir_x = -30 if error_robot_x > 0 else 30
-                                self.enviar_texto(f"X,{dir_x}")
-                            elif abs(error_robot_y) > TOLERANCIA_CENTRO:
-                                self.robot_ocupado = True
+                                dir_x = -rafaga_actual if error_robot_x > 0 else rafaga_actual
+                                self.enviar_movimiento(f"X,{dir_x}")
+                            elif abs(error_robot_y) > tolerancia_actual:
                                 self.eje_actual_ia = "Y"
-                                dir_y = -30 if error_robot_y > 0 else 30
-                                self.enviar_texto(f"Y,{dir_y}")
+                                dir_y = -rafaga_actual if error_robot_y > 0 else rafaga_actual
+                                self.enviar_movimiento(f"Y,{dir_y}")
 
                         elif self.robot_ocupado:
                             if hasattr(self, 'eje_actual_ia'):
-                                if self.eje_actual_ia == "X" and abs(error_robot_x) <= TOLERANCIA_CENTRO:
+                                if self.eje_actual_ia == "X" and abs(error_robot_x) <= tolerancia_actual:
                                     self.root.after(0, self.freno_ia)
-                                elif self.eje_actual_ia == "Y" and abs(error_robot_y) <= TOLERANCIA_CENTRO:
+                                elif self.eje_actual_ia == "Y" and abs(error_robot_y) <= tolerancia_actual:
                                     self.root.after(0, self.freno_ia)
 
                     cv2.putText(frame, estado, (10, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color_estado, 2)
@@ -537,7 +675,10 @@ class RobotGUI:
                     if time.time() - self.tiempo_inicio_busqueda > 3.0:
                         self.estado_secuencia = "SEARCH_PATTERN_1"
                         self.log("IA: Botella no vista. Iniciando patrón de barrido...")
-                        self.enviar_texto("Y,100")
+                        self.enviar_movimiento("Y,100")
+
+            # Marcador fijo para visualización del paralaje
+            cv2.drawMarker(frame, (centro_camara_x, centro_camara_y), (0, 0, 255), cv2.MARKER_CROSS, 10, 2)
 
             cv2.imshow("Alineacion Visual", frame)
             if cv2.waitKey(1) & 0xFF == 27:
