@@ -4,7 +4,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class AppConfig:
     # Red
-    robot_ip: str = "172.18.19.97"
+    robot_ip: str = "192.168.125.1"
     robot_port: int = 8000
 
     # IA
@@ -12,7 +12,7 @@ class AppConfig:
     labels_path: str = "converted_keras/labels.txt"
 
     # Cámara
-    camera_index: int = 1
+    camera_index: int = 0
     use_dshow: bool = True
 
     # Visión
