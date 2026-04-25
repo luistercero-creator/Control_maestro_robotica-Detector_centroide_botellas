@@ -1,0 +1,6 @@
+# Requisitos para el Sistema de Control IA y Visión Artificial / para python 3.11
+opencv-python==4.10.0.84
+numpy<2.0.0
+tensorflow==2.15.0
+keras==2.15.0
+pillow==10.4.0
